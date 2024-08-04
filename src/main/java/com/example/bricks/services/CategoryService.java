@@ -1,31 +1,31 @@
 package com.example.bricks.services;
 
+import com.example.bricks.component.CategoryMetrics;
+import com.example.bricks.component.CategoryServiceLogger;
 import com.example.bricks.model.Category;
 import com.example.bricks.repositories.CategoryRepository;
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreaker;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.web.client.RestTemplate;
-
-import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
+import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class CategoryService {
-
-    @Autowired
-    private RestTemplate restTemplate;
-
-    @Autowired
-    private CategoryRepository categoryRepository;
+    private final RestTemplate restTemplate;
+    private final CategoryRepository categoryRepository;
+    private final CategoryMetrics categoryMetrics;
+    private final CategoryServiceLogger categoryServiceLogger;
+    private final CircuitBreakerFactory circuitBreakerFactory;
 
     private final String categoryApiUrl = "https://api.develop.bricks.com.ar/business/category";
 
@@ -33,17 +33,27 @@ public class CategoryService {
     private LocalDate lastRequestDate = LocalDate.now();
 
     @Cacheable(value = "categories", key = "'allCategories'")
-    @CircuitBreaker(name = "categoryService", fallbackMethod = "getDefaultCategories")
     public List<Category> getCategories() {
-        if (canMakeRequest()) {
-            ResponseEntity<Category[]> response = restTemplate.getForEntity(categoryApiUrl, Category[].class);
-            List<Category> categories = Arrays.asList(response.getBody());
-            categoryRepository.saveAll(categories);
-            return categories;
-        } else {
-            log.warn("Daily request limit reached. Returning categories from local database.");
-            return categoryRepository.findAll();
-        }
+        CircuitBreaker circuitBreaker = circuitBreakerFactory.create("categoryService");
+
+        return circuitBreaker.run(() -> {
+            if (canMakeRequest()) {
+                categoryServiceLogger.logRequestAttempt();
+                categoryMetrics.incrementRequestCount();
+                ResponseEntity<Category[]> response = restTemplate.getForEntity(categoryApiUrl, Category[].class);
+                List<Category> categories = Arrays.asList(response.getBody());
+                categoryRepository.saveAll(categories);
+                categoryServiceLogger.logRequestSuccess(categories.size());
+                return categories;
+            } else {
+                categoryServiceLogger.logRequestLimited();
+                categoryMetrics.incrementLimitedRequestCount();
+                return getDefaultCategories();
+            }
+        }, throwable -> {
+            categoryServiceLogger.logRequestFailure(throwable);
+            return getDefaultCategories();
+        });
     }
 
     private boolean canMakeRequest() {
@@ -55,8 +65,7 @@ public class CategoryService {
         return dailyRequestCount.incrementAndGet() <= 10;
     }
 
-    public List<Category> getDefaultCategories(Throwable t) {
-        log.error("Error fetching categories from external API", t);
+    private List<Category> getDefaultCategories() {
         return categoryRepository.findAll();
     }
 

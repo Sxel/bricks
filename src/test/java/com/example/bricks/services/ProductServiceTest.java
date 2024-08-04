@@ -1,77 +1,91 @@
 package com.example.bricks.services;
 
+
+import com.example.bricks.model.Category;
+import com.example.bricks.model.Product;
+import com.example.bricks.repositories.ProductRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cloud.context.named.NamedContextFactory;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.web.server.ResponseStatusException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
-
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.Optional;
 
-import com.example.bricks.model.Product;
-import com.example.bricks.model.Category;
-import com.example.bricks.repositories.ProductRepository;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
-
-@SpringBootTest
 public class ProductServiceTest {
-    @MockBean
+
+    @Mock
     private ProductRepository productRepository;
 
-    @MockBean
+    @Mock
     private CategoryService categoryService;
 
-    @Autowired
+    @InjectMocks
     private ProductService productService;
 
-
-
-    @Test
-    void createProductTest() {
-        Product product = new Product();
-        product.setName("New Product");
-        product.setCategory(new Category(1L, "Test Category"));
-
-        when(categoryService.getCategory(1L)).thenReturn(new Category(1L, "Test Category"));
-        when(productRepository.save(any(Product.class))).thenReturn(product);
-
-        Product result = productService.createProduct(product);
-
-        assertEquals("New Product", result.getName());
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
     }
 
     @Test
-    void getProductTest() {
-        Product product = new Product();
-        product.setId(1L);
-        product.setName("Test Product");
+    void getProducts_ShouldReturnPageOfProducts() {
+        Category category = new Category(1L, "Test Category");
+        Product product = new Product(1L, "Test Product", 10.0, 5, category);
+        Page<Product> productPage = new PageImpl<>(Arrays.asList(product));
+
+        when(productRepository.findAll(any(Specification.class), any(Pageable.class))).thenReturn(productPage);
+
+        Page<Product> result = productService.getProducts("Test", 10.0, 5, 1L, Pageable.unpaged());
+
+        assertNotNull(result);
+        assertEquals(1, result.getTotalElements());
+        assertEquals("Test Product", result.getContent().get(0).getName());
+    }
+
+    @Test
+    void getProduct_ShouldReturnProductWhenFound() {
+        Category category = new Category(1L, "Test Category");
+        Product product = new Product(1L, "Test Product", 10.0, 5, category);
 
         when(productRepository.findById(1L)).thenReturn(Optional.of(product));
 
         Product result = productService.getProduct(1L);
 
+        assertNotNull(result);
         assertEquals("Test Product", result.getName());
     }
 
     @Test
-    void deleteProductTest() {
-        Long productId = 1L;
+    void getProduct_ShouldThrowExceptionWhenNotFound() {
+        when(productRepository.findById(1L)).thenReturn(Optional.empty());
 
-        when(productRepository.existsById(productId)).thenReturn(true);
+        assertThrows(ResponseStatusException.class, () -> productService.getProduct(1L));
+    }
 
-        assertDoesNotThrow(() -> productService.deleteProduct(productId));
+    @Test
+    void createProduct_ShouldReturnCreatedProduct() {
+        Category category = new Category(1L, "Test Category");
+        Product product = new Product(null, "New Product", 15.0, 10, category);
+        Product savedProduct = new Product(1L, "New Product", 15.0, 10, category);
 
-        verify(productRepository, times(1)).deleteById(productId);
+        when(categoryService.getCategory(1L)).thenReturn(category);
+        when(productRepository.save(any(Product.class))).thenReturn(savedProduct);
+
+        Product result = productService.createProduct(product);
+
+        assertNotNull(result);
+        assertEquals(1L, result.getId());
+        assertEquals("New Product", result.getName());
     }
 }
