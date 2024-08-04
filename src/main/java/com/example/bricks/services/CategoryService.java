@@ -3,21 +3,18 @@ package com.example.bricks.services;
 import com.example.bricks.model.Category;
 import com.example.bricks.repositories.CategoryRepository;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-
-
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
@@ -30,40 +27,41 @@ public class CategoryService {
     @Autowired
     private CategoryRepository categoryRepository;
 
-
     private final String categoryApiUrl = "https://api.develop.bricks.com.ar/business/category";
 
+    private AtomicInteger dailyRequestCount = new AtomicInteger(0);
+    private LocalDate lastRequestDate = LocalDate.now();
 
-
-    @PostConstruct
-    public void syncCategories() {
-        log.info("Iniciando sincronización de categorías");
-        try {
+    @Cacheable(value = "categories", key = "'allCategories'")
+    @CircuitBreaker(name = "categoryService", fallbackMethod = "getDefaultCategories")
+    public List<Category> getCategories() {
+        if (canMakeRequest()) {
             ResponseEntity<Category[]> response = restTemplate.getForEntity(categoryApiUrl, Category[].class);
-            Category[] categories = response.getBody();
-            if (categories != null) {
-                categoryRepository.saveAll(Arrays.asList(categories));
-                log.info("Sincronización de categorías completada. {} categorías actualizadas", categories.length);
-            }
-        } catch (Exception e) {
-            log.error("Error al sincronizar categorías", e);
+            List<Category> categories = Arrays.asList(response.getBody());
+            categoryRepository.saveAll(categories);
+            return categories;
+        } else {
+            log.warn("Daily request limit reached. Returning categories from local database.");
+            return categoryRepository.findAll();
         }
     }
 
-    @Cacheable(value = "categories")
-    @CircuitBreaker(name = "categoryService", fallbackMethod = "getDefaultCategories")
-    public List<Category> getCategories() {
-        ResponseEntity<Category[]> response = restTemplate.getForEntity(categoryApiUrl, Category[].class);
-        return Arrays.asList(response.getBody());
+    private boolean canMakeRequest() {
+        LocalDate currentDate = LocalDate.now();
+        if (!currentDate.equals(lastRequestDate)) {
+            dailyRequestCount.set(0);
+            lastRequestDate = currentDate;
+        }
+        return dailyRequestCount.incrementAndGet() <= 10;
     }
 
     public List<Category> getDefaultCategories(Throwable t) {
-        // Retorna una lista de categorías por defecto en caso de fallo
-        return Arrays.asList(new Category(1L, "Default Category"));
+        log.error("Error fetching categories from external API", t);
+        return categoryRepository.findAll();
     }
 
     public Category getCategory(Long id) {
         return categoryRepository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Category not found"));
+                .orElseThrow(() -> new RuntimeException("Category not found"));
     }
 }
